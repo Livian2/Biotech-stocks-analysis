@@ -189,6 +189,60 @@ export default {
       return jsonResponse({ alerts: state.recentAlerts });
     }
 
+    // Manual poll trigger — runs regardless of premarket hours (for testing)
+    if (url.pathname === '/api/refresh') {
+      if (!env.STATE) return setupResponse({ code: 'NO_KV' });
+      const state = await loadState(env);
+      const results = [];
+      for (let i = 0; i < BIOTECH_TICKERS.length; i++) {
+        if (i > 0) await sleep(TICKER_STAGGER_MS);
+        const ticker = BIOTECH_TICKERS[i];
+        try {
+          await checkStock(ticker, state, env);
+          results.push({ ticker, ok: true, price: state.tickers[ticker].currentPrice });
+        } catch (e) {
+          results.push({ ticker, ok: false, error: e.message });
+        }
+      }
+      await saveState(env, state);
+      return jsonResponse({ refreshed: true, results });
+    }
+
+    // Diagnostic endpoint — shows runtime config without exposing secret values
+    if (url.pathname === '/api/debug') {
+      const etParts = getETParts();
+      let kvOk = false, kvError = null;
+      try {
+        await env.STATE.get('__ping__');
+        kvOk = true;
+      } catch (e) {
+        kvError = e.message;
+      }
+      // Test one Finnhub quote to confirm the API key works
+      let finnhubOk = false, finnhubSample = null, finnhubError = null;
+      if (env.FINNHUB_API_KEY) {
+        try {
+          const r = await fetch(
+            `https://finnhub.io/api/v1/quote?symbol=AAPL&token=${env.FINNHUB_API_KEY}`
+          );
+          const d = await r.json();
+          finnhubOk = typeof d.c === 'number' && d.c > 0;
+          finnhubSample = { c: d.c, pc: d.pc, status: r.status };
+        } catch (e) {
+          finnhubError = e.message;
+        }
+      }
+      return jsonResponse({
+        utcNow:          new Date().toISOString(),
+        etParts,
+        isPremarket:     isPremarketHours(),
+        hasApiKey:       !!env.FINNHUB_API_KEY,
+        kvBound:         !!env.STATE,
+        kvOk,            kvError,
+        finnhubOk,       finnhubSample, finnhubError,
+      });
+    }
+
     return env.ASSETS.fetch(request);
   },
 
