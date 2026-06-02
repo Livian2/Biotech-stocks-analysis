@@ -18,7 +18,7 @@ const path = require('path');
 // Configuration
 // ---------------------------------------------------------------------------
 
-const FINNHUB_API_KEY = 'YOUR_FINNHUB_API_KEY'; // replace with key from finnhub.io/dashboard
+const FINNHUB_API_KEY = 'd8f9h11r01qub7kgjf30d8f9h11r01qub7kgjf3g'; // replace with key from finnhub.io/dashboard
 
 const BIOTECH_TICKERS = [
   'VNDA',  // Vanda Pharmaceuticals       — PDUFA Jun 20 (tradipitant)
