@@ -33,14 +33,16 @@ const BIOTECH_TICKERS = Object.keys(TICKER_META);
 // Constants
 // ---------------------------------------------------------------------------
 
-const POLL_INTERVAL_MS    = 30_000;
-const TICKER_STAGGER_MS   = 500;
+const TICKER_STAGGER_MS   = 200;     // small stagger between Finnhub calls
 const WARMUP_MINUTES      = 20;
 const ROLLING_WINDOW_MINS = 30;
 const VOLUME_SPIKE_MULT   = 5;
 const PRICE_CHANGE_PCT    = 5;
 const PRICE_LOOKBACK_MINS = 15;
 const SPIKE_LOOKBACK_MINS = 10;
+
+const STATE_KEY  = 'screener_state';
+const MAX_ALERTS = 50;
 
 // ---------------------------------------------------------------------------
 // Time helpers (timezone-aware, ET)
@@ -68,71 +70,65 @@ function bucketToMins(bucket) {
 }
 
 // ---------------------------------------------------------------------------
-// Worker entry point — routes /api/* to the Durable Object, rest to assets
+// State persistence (Workers KV)
+//
+// One JSON blob holds everything. Per-ticker minuteVolumes is stored as a
+// plain object (not a Map) so it round-trips through JSON cleanly.
+// ---------------------------------------------------------------------------
+
+function freshState() {
+  const tickers = {};
+  for (const ticker of BIOTECH_TICKERS) {
+    tickers[ticker] = {
+      prices:        [],     // [{ bucket, price }]
+      minuteVolumes: {},     // { "HH:MM": volume }
+      lastVolume:    0,
+      startTime:     null,   // epoch ms of first data point
+      currentPrice:  null,
+      prevClose:     null,
+      dayChangePct:  null,
+      volumeRatio:   null,
+      warmupDone:    false,
+      lastUpdated:   null,
+      alertFired:    false,
+    };
+  }
+  return { tickers, recentAlerts: [] };
+}
+
+async function loadState(env) {
+  const raw = await env.STATE.get(STATE_KEY);
+  if (!raw) return freshState();
+  try {
+    const parsed = JSON.parse(raw);
+    // Backfill any newly-added tickers
+    for (const ticker of BIOTECH_TICKERS) {
+      if (!parsed.tickers[ticker]) parsed.tickers[ticker] = freshState().tickers[ticker];
+    }
+    if (!parsed.recentAlerts) parsed.recentAlerts = [];
+    return parsed;
+  } catch {
+    return freshState();
+  }
+}
+
+async function saveState(env, state) {
+  await env.STATE.put(STATE_KEY, JSON.stringify(state));
+}
+
+// ---------------------------------------------------------------------------
+// Worker entry points
 // ---------------------------------------------------------------------------
 
 export default {
+  // HTTP — serves the API and the static dashboard
   async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname.startsWith('/api/')) {
-      const stub = env.SCREENER.get(env.SCREENER.idFromName('global'));
-      return stub.fetch(request);
-    }
-    return env.ASSETS.fetch(request);
-  },
-};
-
-// ---------------------------------------------------------------------------
-// Durable Object — holds all screener state, runs alarm every 30 s
-// ---------------------------------------------------------------------------
-
-export class ScreenerDO {
-  constructor(state, env) {
-    this.state = state;
-    this.env   = env;
-    this.stockData    = null;
-    this.recentAlerts = [];
-  }
-
-  // Lazy-init stockData (survives across requests within the same DO instance,
-  // but resets on cold-start — fine since we need warmup anyway).
-  _initStockData() {
-    if (this.stockData) return;
-    this.stockData = {};
-    for (const ticker of BIOTECH_TICKERS) {
-      this.stockData[ticker] = {
-        prices:        [],
-        minuteVolumes: new Map(),
-        lastVolume:    0,
-        startTime:     null,
-        // UI fields
-        currentPrice:  null,
-        prevClose:     null,
-        dayChangePct:  null,
-        volumeRatio:   null,
-        warmupDone:    false,
-        lastUpdated:   null,
-        alertFired:    false,
-      };
-    }
-  }
-
-  // ── HTTP handler ──────────────────────────────────────────────────────────
-
-  async fetch(request) {
-    this._initStockData();
-
-    // Ensure the polling alarm is always scheduled
-    const current = await this.state.storage.getAlarm();
-    if (!current) {
-      await this.state.storage.setAlarm(Date.now() + 1_000);
-    }
-
     const url = new URL(request.url);
 
     if (url.pathname === '/api/stocks') {
+      const state = await loadState(env);
       const payload = BIOTECH_TICKERS.map((ticker) => {
-        const s    = this.stockData[ticker];
+        const s    = state.tickers[ticker];
         const meta = TICKER_META[ticker];
         return {
           ticker,
@@ -156,138 +152,128 @@ export class ScreenerDO {
     }
 
     if (url.pathname === '/api/alerts') {
-      return jsonResponse({ alerts: this.recentAlerts });
+      const state = await loadState(env);
+      return jsonResponse({ alerts: state.recentAlerts });
     }
 
-    return new Response('Not found', { status: 404 });
-  }
+    return env.ASSETS.fetch(request);
+  },
 
-  // ── Alarm — fires every 30 s ──────────────────────────────────────────────
-
-  async alarm() {
-    this._initStockData();
-    try {
-      if (isPremarketHours()) {
-        await this._runScreener();
-      }
-    } finally {
-      await this.state.storage.setAlarm(Date.now() + POLL_INTERVAL_MS);
-    }
-  }
-
-  async _runScreener() {
+  // Cron — fires every minute, polls Finnhub, updates KV state
+  async scheduled(event, env, ctx) {
+    if (!isPremarketHours()) return;
+    const state = await loadState(env);
     for (let i = 0; i < BIOTECH_TICKERS.length; i++) {
       if (i > 0) await sleep(TICKER_STAGGER_MS);
       try {
-        await this._checkStock(BIOTECH_TICKERS[i]);
+        await checkStock(BIOTECH_TICKERS[i], state, env);
       } catch (e) {
         console.error(`${BIOTECH_TICKERS[i]}: ${e.message}`);
       }
     }
+    await saveState(env, state);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Core screening logic
+// ---------------------------------------------------------------------------
+
+async function checkStock(ticker, state, env) {
+  const quote = await getQuote(ticker, env);
+  if (!quote || quote.c <= 0) return;
+
+  const s = state.tickers[ticker];
+  const bucket = getMinuteBucket();
+  const currentMins = bucketToMins(bucket);
+
+  // UI-facing fields
+  s.currentPrice = quote.c;
+  s.lastUpdated  = new Date().toISOString();
+  if (quote.pc && quote.pc > 0) {
+    s.prevClose    = quote.pc;
+    s.dayChangePct = ((quote.c - quote.pc) / quote.pc) * 100;
   }
 
-  // ── Per-ticker core logic ─────────────────────────────────────────────────
+  // Start warmup timer on first data point
+  if (!s.startTime) s.startTime = Date.now();
 
-  async _checkStock(ticker) {
-    const quote = await this._getQuote(ticker);
-    if (!quote || quote.c <= 0) return;
+  // Price history (trimmed to max lookback)
+  s.prices.push({ bucket, price: quote.c });
+  const maxLookback = Math.max(PRICE_LOOKBACK_MINS, SPIKE_LOOKBACK_MINS) + 5;
+  s.prices = s.prices.filter((p) => currentMins - bucketToMins(p.bucket) <= maxLookback);
 
-    const state  = this.stockData[ticker];
-    const bucket = getMinuteBucket();
-    const currentMins = bucketToMins(bucket);
+  // Per-minute volume accumulation (delta from cumulative Finnhub volume)
+  if (s.lastVolume > 0 && quote.v > s.lastVolume) {
+    const delta = quote.v - s.lastVolume;
+    s.minuteVolumes[bucket] = (s.minuteVolumes[bucket] || 0) + delta;
+  }
+  s.lastVolume = quote.v;
 
-    // Update UI-facing fields
-    state.currentPrice = quote.c;
-    state.lastUpdated  = new Date().toISOString();
-    if (quote.pc && quote.pc > 0) {
-      state.prevClose   = quote.pc;
-      state.dayChangePct = ((quote.c - quote.pc) / quote.pc) * 100;
-    }
-
-    // Start warmup timer on first data point
-    if (!state.startTime) state.startTime = Date.now();
-
-    // Price history (ring-buffer, trimmed to max lookback)
-    state.prices.push({ bucket, price: quote.c });
-    const maxLookback = Math.max(PRICE_LOOKBACK_MINS, SPIKE_LOOKBACK_MINS) + 5;
-    state.prices = state.prices.filter(
-      (p) => currentMins - bucketToMins(p.bucket) <= maxLookback
-    );
-
-    // Per-minute volume accumulation (delta from cumulative Finnhub volume)
-    if (state.lastVolume > 0 && quote.v > state.lastVolume) {
-      const delta = quote.v - state.lastVolume;
-      state.minuteVolumes.set(bucket, (state.minuteVolumes.get(bucket) || 0) + delta);
-    }
-    state.lastVolume = quote.v;
-
-    // Prune old volume buckets
-    const trimThreshold = currentMins - (ROLLING_WINDOW_MINS + 5);
-    for (const [b] of state.minuteVolumes.entries()) {
-      if (bucketToMins(b) < trimThreshold) state.minuteVolumes.delete(b);
-    }
-
-    // Warmup gate
-    if (Date.now() - state.startTime < WARMUP_MINUTES * 60_000) return;
-    state.warmupDone = true;
-
-    // Volume spike check
-    const currentBucketVol = state.minuteVolumes.get(bucket) || 0;
-    const rollingAvg = this._rolling30MinAvg(ticker);
-    if (rollingAvg === 0) return;
-
-    const volumeRatio = currentBucketVol / rollingAvg;
-    state.volumeRatio = volumeRatio;
-    if (volumeRatio < VOLUME_SPIKE_MULT) return;
-
-    // Price increase checks
-    const px = quote.c;
-
-    const ref15 = state.prices.find((p) => currentMins - bucketToMins(p.bucket) >= PRICE_LOOKBACK_MINS);
-    if (!ref15) return;
-    const chg15 = ((px - ref15.price) / ref15.price) * 100;
-    if (chg15 <= PRICE_CHANGE_PCT) return;
-
-    const ref10 = state.prices.find((p) => currentMins - bucketToMins(p.bucket) >= SPIKE_LOOKBACK_MINS);
-    if (!ref10) return;
-    const chg10 = ((px - ref10.price) / ref10.price) * 100;
-    if (chg10 <= PRICE_CHANGE_PCT) return;
-
-    // Fire alert
-    state.alertFired = true;
-    console.log(
-      `ALERT ${ticker} | $${px.toFixed(2)} | +${chg15.toFixed(1)}% (15m) | ` +
-      `+${chg10.toFixed(1)}% (10m) | ${volumeRatio.toFixed(1)}x vol`
-    );
-    this.recentAlerts.unshift({
-      ticker, price: px, pctChange15: chg15, pctChange10: chg10,
-      volumeRatio, timestamp: new Date().toISOString(),
-    });
-    if (this.recentAlerts.length > 50) this.recentAlerts.pop();
+  // Prune old volume buckets
+  const trimThreshold = currentMins - (ROLLING_WINDOW_MINS + 5);
+  for (const b of Object.keys(s.minuteVolumes)) {
+    if (bucketToMins(b) < trimThreshold) delete s.minuteVolumes[b];
   }
 
-  _rolling30MinAvg(ticker) {
-    const state  = this.stockData[ticker];
-    const bucket = getMinuteBucket();
-    const entries = [];
-    for (const [b, vol] of state.minuteVolumes.entries()) {
-      if (b !== bucket) entries.push(vol);
-    }
-    if (!entries.length) return 0;
-    const window = entries.slice(-ROLLING_WINDOW_MINS);
-    return window.reduce((a, b) => a + b, 0) / window.length;
-  }
+  // Warmup gate
+  if (Date.now() - s.startTime < WARMUP_MINUTES * 60_000) return;
+  s.warmupDone = true;
 
-  async _getQuote(ticker) {
-    const url = `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${this.env.FINNHUB_API_KEY}`;
-    const res  = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (typeof data.c === 'number' && typeof data.v === 'number') {
-      return { c: data.c, v: data.v, pc: data.pc || null };
-    }
-    return null;
+  // Volume spike check
+  const currentBucketVol = s.minuteVolumes[bucket] || 0;
+  const rollingAvg = rolling30MinAvg(s, bucket);
+  if (rollingAvg === 0) return;
+
+  const volumeRatio = currentBucketVol / rollingAvg;
+  s.volumeRatio = volumeRatio;
+  if (volumeRatio < VOLUME_SPIKE_MULT) return;
+
+  // Price increase checks
+  const px = quote.c;
+
+  const ref15 = s.prices.find((p) => currentMins - bucketToMins(p.bucket) >= PRICE_LOOKBACK_MINS);
+  if (!ref15) return;
+  const chg15 = ((px - ref15.price) / ref15.price) * 100;
+  if (chg15 <= PRICE_CHANGE_PCT) return;
+
+  const ref10 = s.prices.find((p) => currentMins - bucketToMins(p.bucket) >= SPIKE_LOOKBACK_MINS);
+  if (!ref10) return;
+  const chg10 = ((px - ref10.price) / ref10.price) * 100;
+  if (chg10 <= PRICE_CHANGE_PCT) return;
+
+  // Fire alert
+  s.alertFired = true;
+  console.log(
+    `ALERT ${ticker} | $${px.toFixed(2)} | +${chg15.toFixed(1)}% (15m) | ` +
+    `+${chg10.toFixed(1)}% (10m) | ${volumeRatio.toFixed(1)}x vol`
+  );
+  state.recentAlerts.unshift({
+    ticker, price: px, pctChange15: chg15, pctChange10: chg10,
+    volumeRatio, timestamp: new Date().toISOString(),
+  });
+  if (state.recentAlerts.length > MAX_ALERTS) state.recentAlerts.pop();
+}
+
+function rolling30MinAvg(s, currentBucket) {
+  const entries = [];
+  for (const [b, vol] of Object.entries(s.minuteVolumes)) {
+    if (b !== currentBucket) entries.push(vol);
   }
+  if (!entries.length) return 0;
+  const window = entries.slice(-ROLLING_WINDOW_MINS);
+  return window.reduce((a, b) => a + b, 0) / window.length;
+}
+
+async function getQuote(ticker, env) {
+  const url = `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${env.FINNHUB_API_KEY}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (typeof data.c === 'number' && typeof data.v === 'number') {
+    return { c: data.c, v: data.v, pc: data.pc || null };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
