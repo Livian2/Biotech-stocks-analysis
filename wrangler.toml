@@ -10,7 +10,7 @@ binding = "ASSETS"
 # Workers KV — holds screener state between cron runs (free tier)
 [[kv_namespaces]]
 binding = "STATE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "f6778deda2b44425a33d3dcc6f361641"
 
 # Cron Trigger — polls Finnhub every minute (free tier; 1 min is the minimum)
 [triggers]
