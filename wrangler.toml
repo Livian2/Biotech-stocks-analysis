@@ -1,0 +1,20 @@
+name = "biotech-screener"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Static dashboard (index.html)
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# Durable Object — holds all screener state and runs the polling alarm
+[[durable_objects.bindings]]
+name = "SCREENER"
+class_name = "ScreenerDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ScreenerDO"]
+
+# Set your API key as a secret (never commit it):
+#   npx wrangler secret put FINNHUB_API_KEY
