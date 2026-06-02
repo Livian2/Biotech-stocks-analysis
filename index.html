@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Biotech Premarket Screener</title>
+  <style>
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --green:     #3fb950;
+      --green-dim: #1a3a22;
+      --red:       #f85149;
+      --red-dim:   #3a1a1a;
+      --yellow:    #d29922;
+      --yellow-dim:#3a2e00;
+      --blue:      #58a6ff;
+      --alert-bg:  #1f1a05;
+      --alert-bdr: #d29922;
+      --radius:    8px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: .3px;
+    }
+
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      border: 1px solid transparent;
+    }
+    .badge.premarket  { background: var(--green-dim);  color: var(--green);  border-color: var(--green); }
+    .badge.closed     { background: var(--red-dim);    color: var(--red);    border-color: var(--red);   }
+    .badge.dot::before {
+      content: '';
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      display: inline-block;
+      animation: pulse 1.4s ease infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+    #last-updated { color: var(--muted); font-size: 12px; }
+
+    main { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── Alert banner ────────────────────────────────────────── */
+    #alerts-section { display: none; }
+    #alerts-section.visible { display: block; }
+
+    .alerts-header {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--yellow);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .alerts-header .count {
+      background: var(--yellow);
+      color: #000;
+      border-radius: 20px;
+      padding: 1px 7px;
+      font-size: 11px;
+    }
+
+    .alert-card {
+      background: var(--alert-bg);
+      border: 1px solid var(--alert-bdr);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 20px;
+      align-items: center;
+    }
+    .alert-ticker { font-size: 16px; font-weight: 700; color: var(--yellow); }
+    .alert-field  { color: var(--muted); font-size: 12px; }
+    .alert-field span { color: var(--text); font-weight: 500; }
+    .alert-time   { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+    /* ── Stats bar ───────────────────────────────────────────── */
+    .stats-bar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 16px;
+      min-width: 130px;
+      flex: 1;
+    }
+    .stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+    .stat-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+
+    /* ── Filter row ──────────────────────────────────────────── */
+    .filter-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .filter-row label { color: var(--muted); font-size: 12px; margin-right: 2px; }
+    .filter-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: .15s;
+    }
+    .filter-btn:hover, .filter-btn.active {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+    .filter-btn.active { background: #0d2240; }
+
+    /* ── Table ───────────────────────────────────────────────── */
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      white-space: nowrap;
+    }
+
+    thead tr {
+      background: var(--surface);
+    }
+
+    th {
+      padding: 10px 14px;
+      text-align: left;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+    }
+    th:hover { color: var(--text); }
+    th.sorted { color: var(--blue); }
+    th.sorted::after { content: ' ▲'; font-size: 9px; }
+    th.sorted.desc::after { content: ' ▼'; }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background .1s;
+    }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,.03); }
+    tbody tr.alerted { background: var(--alert-bg); }
+
+    td { padding: 9px 14px; vertical-align: middle; }
+
+    .ticker-cell { font-weight: 700; font-size: 14px; letter-spacing: .3px; }
+    .ticker-cell.alerted { color: var(--yellow); }
+
+    .name-cell { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+
+    .catalyst-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      white-space: normal;
+      max-width: 220px;
+    }
+    .type-PDUFA    { background: #1a2a4a; color: #79b8ff; }
+    .type-ASCO     { background: #1a3a22; color: #56d364; }
+    .type-Trial    { background: #2a1a3a; color: #d2a8ff; }
+    .type-Pipeline { background: #1e1e1e; color: #8b949e; }
+
+    .price-cell { font-size: 15px; font-weight: 600; }
+
+    .change-cell { font-weight: 600; }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .neu { color: var(--muted); }
+
+    .vol-bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .vol-bar-bg {
+      width: 80px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .vol-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--muted);
+      transition: width .4s;
+    }
+    .vol-bar-fill.spike { background: var(--yellow); }
+    .vol-label { font-size: 12px; color: var(--muted); min-width: 36px; }
+    .vol-label.spike { color: var(--yellow); font-weight: 700; }
+
+    .status-cell { font-size: 12px; }
+    .status-warmup  { color: var(--muted); }
+    .status-watching { color: var(--blue); }
+    .status-alert   { color: var(--yellow); font-weight: 600; }
+    .status-nodata  { color: var(--border); }
+
+    .updated-cell { color: var(--muted); font-size: 11px; }
+
+    /* ── Responsive ──────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      main { padding: 12px; }
+      .name-cell, .catalyst-pill, th:nth-child(3), td:nth-child(3) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🧬 Biotech Premarket Screener</h1>
+  <div class="header-meta">
+    <span id="market-badge" class="badge closed">● Closed</span>
+    <span id="last-updated">—</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Alert banner -->
+  <section id="alerts-section">
+    <div class="alerts-header">
+      <span>🚨 Active Alerts</span>
+      <span class="count" id="alert-count">0</span>
+    </div>
+    <div id="alert-list"></div>
+  </section>
+
+  <!-- Stats bar -->
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">Tracking</div>
+      <div class="stat-value" id="stat-tracking">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Ready</div>
+      <div class="stat-value" id="stat-ready">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Alerts fired</div>
+      <div class="stat-value" id="stat-alerts" style="color:var(--yellow)">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Gainers</div>
+      <div class="stat-value" id="stat-gainers" style="color:var(--green)">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Losers</div>
+      <div class="stat-value" id="stat-losers" style="color:var(--red)">—</div>
+    </div>
+  </div>
+
+  <!-- Filter row -->
+  <div class="filter-row">
+    <label>Filter:</label>
+    <button class="filter-btn active" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="PDUFA">PDUFA</button>
+    <button class="filter-btn" data-filter="ASCO">ASCO</button>
+    <button class="filter-btn" data-filter="Trial">Trial</button>
+    <button class="filter-btn" data-filter="Pipeline">Pipeline</button>
+    <button class="filter-btn" data-filter="alerted">Alerted only</button>
+  </div>
+
+  <!-- Main table -->
+  <div class="table-wrap">
+    <table id="stocks-table">
+      <thead>
+        <tr>
+          <th data-col="ticker">Ticker</th>
+          <th data-col="name">Company</th>
+          <th data-col="catalyst">Catalyst</th>
+          <th data-col="currentPrice" class="sorted desc">Price</th>
+          <th data-col="dayChangePct">Day Chg %</th>
+          <th data-col="volumeRatio">Vol Spike</th>
+          <th data-col="status">Status</th>
+          <th data-col="lastUpdated">Updated</th>
+        </tr>
+      </thead>
+      <tbody id="stocks-body">
+        <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:40px">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</main>
+
+<script>
+  const API_STOCKS = '/api/stocks';
+  const API_ALERTS = '/api/alerts';
+  const REFRESH_MS = 15_000;
+
+  let sortCol = 'currentPrice';
+  let sortDir = 'desc';
+  let activeFilter = 'all';
+  let lastStocks = [];
+
+  // ── Fetch & render ──────────────────────────────────────────
+
+  async function refresh() {
+    try {
+      const [sRes, aRes] = await Promise.all([fetch(API_STOCKS), fetch(API_ALERTS)]);
+      const { stocks, premarket, serverTime } = await sRes.json();
+      const { alerts } = await aRes.json();
+      lastStocks = stocks;
+      renderMarketBadge(premarket);
+      renderStats(stocks, alerts);
+      renderAlerts(alerts);
+      renderTable(stocks);
+      document.getElementById('last-updated').textContent =
+        'Updated ' + new Date(serverTime).toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) + ' ET';
+    } catch (e) {
+      document.getElementById('last-updated').textContent = 'Connection error — retrying…';
+    }
+  }
+
+  // ── Market badge ────────────────────────────────────────────
+
+  function renderMarketBadge(premarket) {
+    const el = document.getElementById('market-badge');
+    if (premarket) {
+      el.className = 'badge premarket dot';
+      el.textContent = ' Premarket live';
+    } else {
+      el.className = 'badge closed';
+      el.textContent = '● Market closed';
+    }
+  }
+
+  // ── Stats ───────────────────────────────────────────────────
+
+  function renderStats(stocks, alerts) {
+    const withData  = stocks.filter(s => s.currentPrice !== null);
+    const ready     = stocks.filter(s => s.warmupDone);
+    const alerted   = stocks.filter(s => s.alertFired);
+    const gainers   = withData.filter(s => s.dayChangePct > 0);
+    const losers    = withData.filter(s => s.dayChangePct < 0);
+    document.getElementById('stat-tracking').textContent = withData.length + ' / ' + stocks.length;
+    document.getElementById('stat-ready').textContent    = ready.length + ' / ' + stocks.length;
+    document.getElementById('stat-alerts').textContent   = alerts.length;
+    document.getElementById('stat-gainers').textContent  = gainers.length;
+    document.getElementById('stat-losers').textContent   = losers.length;
+  }
+
+  // ── Alert banner ────────────────────────────────────────────
+
+  function renderAlerts(alerts) {
+    const section = document.getElementById('alerts-section');
+    const list    = document.getElementById('alert-list');
+    const count   = document.getElementById('alert-count');
+    if (!alerts.length) { section.classList.remove('visible'); return; }
+    section.classList.add('visible');
+    count.textContent = alerts.length;
+    list.innerHTML = alerts.map(a => `
+      <div class="alert-card">
+        <span class="alert-ticker">${a.ticker}</span>
+        <span class="alert-field">Price <span>$${a.price.toFixed(2)}</span></span>
+        <span class="alert-field">15-min chg <span class="pos">+${a.pctChange15.toFixed(1)}%</span></span>
+        <span class="alert-field">10-min chg <span class="pos">+${a.pctChange10.toFixed(1)}%</span></span>
+        <span class="alert-field">Vol spike <span>${a.volumeRatio.toFixed(1)}×</span></span>
+        <span class="alert-time">${fmtTime(a.timestamp)}</span>
+      </div>`).join('');
+  }
+
+  // ── Table ───────────────────────────────────────────────────
+
+  function renderTable(stocks) {
+    let rows = stocks.slice();
+
+    // Filter
+    if (activeFilter === 'alerted') {
+      rows = rows.filter(s => s.alertFired);
+    } else if (activeFilter !== 'all') {
+      rows = rows.filter(s => s.catalystType === activeFilter);
+    }
+
+    // Sort
+    rows.sort((a, b) => {
+      let av = a[sortCol], bv = b[sortCol];
+      if (av === null || av === undefined) av = sortDir === 'asc' ? Infinity : -Infinity;
+      if (bv === null || bv === undefined) bv = sortDir === 'asc' ? Infinity : -Infinity;
+      if (typeof av === 'string') av = av.toLowerCase();
+      if (typeof bv === 'string') bv = bv.toLowerCase();
+      if (av < bv) return sortDir === 'asc' ? -1 :  1;
+      if (av > bv) return sortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
+
+    const tbody = document.getElementById('stocks-body');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:32px">No stocks match this filter</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map(s => {
+      const alertedRow = s.alertFired ? 'alerted' : '';
+      const alertedTk  = s.alertFired ? 'alerted' : '';
+
+      // Price
+      const priceStr = s.currentPrice !== null ? '$' + s.currentPrice.toFixed(2) : '—';
+
+      // Day change
+      let changeStr = '—', changeClass = 'neu';
+      if (s.dayChangePct !== null) {
+        const sign = s.dayChangePct >= 0 ? '+' : '';
+        changeStr  = sign + s.dayChangePct.toFixed(2) + '%';
+        changeClass = s.dayChangePct > 0 ? 'pos' : s.dayChangePct < 0 ? 'neg' : 'neu';
+      }
+
+      // Volume bar
+      let volHtml = '<span style="color:var(--muted);font-size:12px">—</span>';
+      if (s.volumeRatio !== null) {
+        const pct  = Math.min(s.volumeRatio / 10 * 100, 100);
+        const spike = s.volumeRatio >= 5;
+        volHtml = `
+          <div class="vol-bar-wrap">
+            <div class="vol-bar-bg"><div class="vol-bar-fill ${spike ? 'spike' : ''}" style="width:${pct}%"></div></div>
+            <span class="vol-label ${spike ? 'spike' : ''}">${s.volumeRatio.toFixed(1)}×</span>
+          </div>`;
+      }
+
+      // Status
+      let statusHtml;
+      if (s.alertFired) {
+        statusHtml = '<span class="status-cell status-alert">🚨 Alert fired</span>';
+      } else if (s.currentPrice === null) {
+        statusHtml = '<span class="status-cell status-nodata">No data</span>';
+      } else if (!s.warmupDone) {
+        statusHtml = '<span class="status-cell status-warmup">⏳ Warming up</span>';
+      } else {
+        statusHtml = '<span class="status-cell status-watching">👁 Watching</span>';
+      }
+
+      // Updated
+      const updStr = s.lastUpdated ? fmtTime(s.lastUpdated) : '—';
+
+      return `
+        <tr class="${alertedRow}">
+          <td class="ticker-cell ${alertedTk}">${s.ticker}</td>
+          <td class="name-cell">${s.name}</td>
+          <td><span class="catalyst-pill type-${s.catalystType}">${s.catalyst}</span></td>
+          <td class="price-cell">${priceStr}</td>
+          <td class="change-cell ${changeClass}">${changeStr}</td>
+          <td>${volHtml}</td>
+          <td>${statusHtml}</td>
+          <td class="updated-cell">${updStr}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────
+
+  function fmtTime(iso) {
+    return new Date(iso).toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }) + ' ET';
+  }
+
+  // ── Sort headers ────────────────────────────────────────────
+
+  document.querySelectorAll('th[data-col]').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.col;
+      if (sortCol === col) {
+        sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortCol = col;
+        sortDir = 'desc';
+      }
+      document.querySelectorAll('th').forEach(h => {
+        h.classList.remove('sorted', 'desc');
+      });
+      th.classList.add('sorted');
+      if (sortDir === 'desc') th.classList.add('desc');
+      renderTable(lastStocks);
+    });
+  });
+
+  // ── Filter buttons ──────────────────────────────────────────
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeFilter = btn.dataset.filter;
+      renderTable(lastStocks);
+    });
+  });
+
+  // ── Boot ────────────────────────────────────────────────────
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
