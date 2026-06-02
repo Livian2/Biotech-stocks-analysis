@@ -61,18 +61,24 @@ function getETParts() {
   });
   const parts = Object.fromEntries(fmt.formatToParts(now).map(p => [p.type, p.value]));
   return {
-    weekday: parts.weekday,               // 'Mon'–'Sun'
-    hour:    parseInt(parts.hour, 10),    // 0–23
-    minute:  parseInt(parts.minute, 10),  // 0–59
+    weekday: parts.weekday,
+    hour:    parseInt(parts.hour, 10),
+    minute:  parseInt(parts.minute, 10),
   };
 }
 
-function isPremarketHours() {
+// Returns one of: 'premarket' | 'open' | 'afterhours' | 'closed'
+function getMarketState() {
   const { weekday, hour, minute } = getETParts();
-  if (weekday === 'Sun' || weekday === 'Sat') return false;
-  const total = hour * 60 + minute;
-  return total >= 4 * 60 && total < 9 * 60 + 30;
+  if (weekday === 'Sun' || weekday === 'Sat') return 'closed';
+  const t = hour * 60 + minute;
+  if (t >= 4 * 60      && t < 9 * 60 + 30)  return 'premarket';
+  if (t >= 9 * 60 + 30 && t < 16 * 60)       return 'open';
+  if (t >= 16 * 60     && t < 20 * 60)        return 'afterhours';
+  return 'closed';
 }
+
+function isPremarketHours() { return getMarketState() === 'premarket'; }
 
 function getMinuteBucket() {
   const { hour, minute } = getETParts();
@@ -173,7 +179,7 @@ export default {
       });
       return jsonResponse({
         stocks: payload,
-        premarket: isPremarketHours(),
+        marketState: getMarketState(),
         configured: !!env.FINNHUB_API_KEY,
         serverTime: new Date().toISOString(),
       });
@@ -246,9 +252,9 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // Cron — fires every minute, polls Finnhub, updates KV state
+  // Cron — fires every minute, polls Finnhub during any active session
   async scheduled(event, env, ctx) {
-    if (!isPremarketHours()) return;
+    if (getMarketState() === 'closed') return;
     const state = await loadState(env);
     for (let i = 0; i < BIOTECH_TICKERS.length; i++) {
       if (i > 0) await sleep(TICKER_STAGGER_MS);

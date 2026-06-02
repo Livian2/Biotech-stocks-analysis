@@ -67,8 +67,10 @@
       font-weight: 500;
       border: 1px solid transparent;
     }
-    .badge.premarket  { background: var(--green-dim);  color: var(--green);  border-color: var(--green); }
-    .badge.closed     { background: var(--red-dim);    color: var(--red);    border-color: var(--red);   }
+    .badge.premarket  { background: var(--yellow-dim); color: var(--yellow); border-color: var(--yellow); }
+    .badge.open       { background: var(--green-dim);  color: var(--green);  border-color: var(--green);  }
+    .badge.afterhours { background: #1a1a3a;           color: #a78bfa;       border-color: #7c3aed;       }
+    .badge.closed     { background: var(--red-dim);    color: var(--red);    border-color: var(--red);    }
     .badge.dot::before {
       content: '';
       width: 7px; height: 7px;
@@ -371,10 +373,10 @@
       }
       hideSetupBanner();
 
-      const { stocks, premarket, serverTime, configured } = sData;
+      const { stocks, marketState, serverTime, configured } = sData;
       const { alerts } = await aRes.json();
       lastStocks = stocks;
-      renderMarketBadge(premarket);
+      renderMarketBadge(marketState);
       renderStats(stocks, alerts);
       renderAlerts(alerts);
       renderTable(stocks);
@@ -408,15 +410,18 @@
 
   // ── Market badge ────────────────────────────────────────────
 
-  function renderMarketBadge(premarket) {
+  const MARKET_STATES = {
+    premarket:  { cls: 'premarket dot',  label: ' Pre-market'   },
+    open:       { cls: 'open dot',       label: ' Market open'  },
+    afterhours: { cls: 'afterhours dot', label: ' After-hours'  },
+    closed:     { cls: 'closed',         label: '● Market closed' },
+  };
+
+  function renderMarketBadge(state) {
     const el = document.getElementById('market-badge');
-    if (premarket) {
-      el.className = 'badge premarket dot';
-      el.textContent = ' Premarket live';
-    } else {
-      el.className = 'badge closed';
-      el.textContent = '● Market closed';
-    }
+    const cfg = MARKET_STATES[state] || MARKET_STATES.closed;
+    el.className = 'badge ' + cfg.cls;
+    el.textContent = cfg.label;
   }
 
   // ── Stats ───────────────────────────────────────────────────
