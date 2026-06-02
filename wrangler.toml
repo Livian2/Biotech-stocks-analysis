@@ -1,4 +1,4 @@
-name = "biotech-screener"
+name = "biotech-stocks-analysis"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
