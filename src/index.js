@@ -357,8 +357,9 @@ async function getQuote(ticker, env) {
   const res = await fetch(url);
   if (!res.ok) return null;
   const data = await res.json();
-  if (typeof data.c === 'number' && typeof data.v === 'number') {
-    return { c: data.c, v: data.v, pc: data.pc || null };
+  // Finnhub /quote does not always include `v` — only require `c`
+  if (typeof data.c === 'number' && data.c > 0) {
+    return { c: data.c, v: typeof data.v === 'number' ? data.v : 0, pc: data.pc || null };
   }
   return null;
 }
