@@ -48,26 +48,42 @@ const MAX_ALERTS = 50;
 // Time helpers (timezone-aware, ET)
 // ---------------------------------------------------------------------------
 
+// Extract ET date/time parts reliably using Intl — avoids the broken
+// new Date(toLocaleString()) pattern which re-parses as UTC in V8/Workers.
+function getETParts() {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(now).map(p => [p.type, p.value]));
+  return {
+    weekday: parts.weekday,               // 'Mon'–'Sun'
+    hour:    parseInt(parts.hour, 10),    // 0–23
+    minute:  parseInt(parts.minute, 10),  // 0–59
+  };
+}
+
 function isPremarketHours() {
-  const etStr = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
-  const et = new Date(etStr);
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-  const total = et.getHours() * 60 + et.getMinutes();
+  const { weekday, hour, minute } = getETParts();
+  if (weekday === 'Sun' || weekday === 'Sat') return false;
+  const total = hour * 60 + minute;
   return total >= 4 * 60 && total < 9 * 60 + 30;
 }
 
 function getMinuteBucket() {
-  return new Date().toLocaleString('en-US', {
-    timeZone: 'America/New_York',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  });
+  const { hour, minute } = getETParts();
+  return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
 }
 
 function bucketToMins(bucket) {
   const [h, m] = bucket.split(':').map(Number);
   return h * 60 + m;
 }
+
 
 // ---------------------------------------------------------------------------
 // State persistence (Workers KV)
