@@ -361,18 +361,49 @@
   async function refresh() {
     try {
       const [sRes, aRes] = await Promise.all([fetch(API_STOCKS), fetch(API_ALERTS)]);
-      const { stocks, premarket, serverTime } = await sRes.json();
+      const sData = await sRes.json();
+
+      // Backend reachable but not fully configured (e.g. KV not bound)
+      if (sData.setupRequired) {
+        showSetupBanner(sData.reason);
+        document.getElementById('last-updated').textContent = 'Setup required';
+        return;
+      }
+      hideSetupBanner();
+
+      const { stocks, premarket, serverTime, configured } = sData;
       const { alerts } = await aRes.json();
       lastStocks = stocks;
       renderMarketBadge(premarket);
       renderStats(stocks, alerts);
       renderAlerts(alerts);
       renderTable(stocks);
-      document.getElementById('last-updated').textContent =
-        'Updated ' + new Date(serverTime).toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) + ' ET';
+      let updTxt = 'Updated ' + new Date(serverTime).toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) + ' ET';
+      if (configured === false) updTxt += ' · ⚠ FINNHUB_API_KEY not set';
+      document.getElementById('last-updated').textContent = updTxt;
     } catch (e) {
       document.getElementById('last-updated').textContent = 'Connection error — retrying…';
     }
+  }
+
+  function showSetupBanner(reason) {
+    let el = document.getElementById('setup-banner');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'setup-banner';
+      el.style.cssText =
+        'background:#3a1a1a;border:1px solid var(--red);color:#ffb4ae;' +
+        'padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px;line-height:1.5';
+      const main = document.querySelector('main');
+      main.insertBefore(el, main.firstChild);
+    }
+    el.innerHTML = '⚠ <strong>Backend not configured.</strong> ' + reason +
+      ' &nbsp;See README.md for setup (create the KV namespace, bind it as <code>STATE</code>, and set the <code>FINNHUB_API_KEY</code> secret).';
+  }
+
+  function hideSetupBanner() {
+    const el = document.getElementById('setup-banner');
+    if (el) el.remove();
   }
 
   // ── Market badge ────────────────────────────────────────────

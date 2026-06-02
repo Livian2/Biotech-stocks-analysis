@@ -97,6 +97,12 @@ function freshState() {
 }
 
 async function loadState(env) {
+  // KV binding missing → backend not finished being set up
+  if (!env.STATE) {
+    const e = new Error('KV namespace "STATE" is not bound to this Worker');
+    e.code = 'NO_KV';
+    throw e;
+  }
   const raw = await env.STATE.get(STATE_KEY);
   if (!raw) return freshState();
   try {
@@ -126,7 +132,12 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/stocks') {
-      const state = await loadState(env);
+      let state;
+      try {
+        state = await loadState(env);
+      } catch (e) {
+        return setupResponse(e);
+      }
       const payload = BIOTECH_TICKERS.map((ticker) => {
         const s    = state.tickers[ticker];
         const meta = TICKER_META[ticker];
@@ -147,12 +158,18 @@ export default {
       return jsonResponse({
         stocks: payload,
         premarket: isPremarketHours(),
+        configured: !!env.FINNHUB_API_KEY,
         serverTime: new Date().toISOString(),
       });
     }
 
     if (url.pathname === '/api/alerts') {
-      const state = await loadState(env);
+      let state;
+      try {
+        state = await loadState(env);
+      } catch (e) {
+        return setupResponse(e);
+      }
       return jsonResponse({ alerts: state.recentAlerts });
     }
 
@@ -283,6 +300,17 @@ async function getQuote(ticker, env) {
 function jsonResponse(data) {
   return new Response(JSON.stringify(data), {
     headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+  });
+}
+
+// Returned when the backend isn't fully set up yet (e.g. KV not bound).
+// 200 so the dashboard can show a friendly message instead of "Connection error".
+function setupResponse(err) {
+  return jsonResponse({
+    setupRequired: true,
+    reason: err && err.code === 'NO_KV'
+      ? 'The "STATE" KV namespace is not bound to this Worker.'
+      : 'Backend not configured yet.',
   });
 }
 
